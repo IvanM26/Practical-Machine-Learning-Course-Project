@@ -1,0 +1,253 @@
+---
+title: "Practical Machine Learning"
+subtitle: "Course Project"
+author: "Ivan Millanes"
+date: "5/12/2020"
+output: html_document
+---
+
+This is the Project for the [Practical Machine Learning](https://www.coursera.org/learn/practical-machine-learning) Course, which is part of Coursera's [Data Science Specialization](https://www.coursera.org/specializations/jhu-data-science).
+
+# Background
+Using devices such as *Jawbone Up*, *Nike FuelBand*, and *Fitbit* it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks.
+
+One thing that people regularly do is quantify *how much* of a particular activity they do, but they rarely quantify *how well* they do it. In this project, the goal is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. For [more information](http://groupware.les.inf.puc-rio.br/har), see the section on the Weight Lifting Exercise Dataset.
+
+# Data
+The data for this project come from [this](http://groupware.les.inf.puc-rio.br/har) source.
+
+# Getting and Cleaning Data
+
+I load libraries to be used.
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(caret)
+library(ggcorrplot)
+```
+
+I download and save the data.
+
+```{r, message=FALSE}
+if (!file.exists("data/pml-training.csv")) {
+      trainURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+      download.file(trainURL,
+              destfile = "data/pml-training.csv")
+}
+
+if (!file.exists("data/pml-testing.csv")) {
+      testURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+      download.file(testURL,
+                    destfile = "data/pml-testing.csv")
+}
+```
+
+I load the data into R.
+
+```{r, message=FALSE, warning=FALSE}
+# Read Data
+training <- read_csv("data/pml-training.csv")
+testing <- read_csv("data/pml-testing.csv")
+```
+
+## Training data set
+
+The training data set is going to be used to fit and assess the model. It consists of `r nrow(training)` observations and `r ncol(training)` variables. One of those variables, `classe`, is the output.
+
+## Testing data set
+
+This data set consists of `r nrow(testing)` new observations, which have to be classified. The observations on this data set don't have the `classe` they belong.
+
+## Data slicing
+
+The `training` data set has the labels for the output. 
+
+I'll split this data set in two:
+
+- `train`, which is going to be used to train the model.
+
+- `test`, which instead of being used to train the model,  it's going to be used to assess the accuracy of the model selected with the `train` data set. This data set will only be used once, and won't influence the model we choose.
+
+70% of `training` data is going to be used for `train`, while the other 30% will be used for `test`.
+
+```{r, warning=FALSE}
+# Set seed
+set.seed(123123)
+
+inTrain <- createDataPartition(y = training$classe, p = 0.70, list=FALSE)
+train <- training[inTrain, ]
+test <- training[-inTrain, ]
+```
+
+This way, `train` has `r nrow(train)` observations, while `test` has the remaining `r nrow(test)`
+
+## Selecting variables
+
+### ID Variables
+
+To fit the model, I won't be using ID variables.
+
+```{r}
+# Remove ID Variables (X1, user_name)
+train$X1 <- NULL
+train$user_name <- NULL
+train$num_window <- NULL
+```
+
+### Time Variables
+
+Also, in order to simplify the analysis, I delete variables related to `time`. In a more comprehensive analysis, perhaps it should be interesting to create new variables (for example, **day of the week** and/or **weekday or weekend flag**, **hour of the day** and/or **part of the day** -morning, afternoon, night-).
+
+```{r}
+# Remove Time Variables
+train <- select(train, -contains("timestamp"))
+```
+
+### NA Values
+
+After inspecting the `train` data set, I see that there are columns that have a lot of `NA` values. These columns won't be useful when fitting the model, so I delete them.
+
+The next code chunk defines a threshold (90%), and deletes all variables that have at least that percentage of `NA` values. 
+
+The definition of that threshold comes from the fact that for this particular data set, we have a group of variables without `NA` values, and another group with a percentage of `NA` values greater than 90%. This threshold may be different for different problems.
+
+```{r}
+# Used to calculate %
+nrow <- nrow(train)
+
+# Set threshold
+threshold = 90
+
+# Set of variables with low NA %
+low_na_pct <- map(train, function(x){
+      sum(is.na(x))/nrow * 100
+}) %>%
+      as_tibble %>%
+      pivot_longer(cols = everything(),
+                   names_to = "variable",
+                   values_to = "na_pct") %>%
+      filter(na_pct < threshold)
+
+# Select Variables with low NA % (Delete Variables with high NA %)
+train <- train %>%
+      select(low_na_pct$variable)
+```
+
+### Near Zero Variables
+
+In this section I'll use the  [nearZerovar](https://www.rdocumentation.org/packages/caret/versions/6.0-76/topics/nearZeroVar) function of the `caret` package in order to identify and remove Near Zero Variance Predictors.
+
+```{r, cache=TRUE}
+# Keep Non-Near Zero Variance Predictors
+nzv <- nearZeroVar(train, saveMetrics = TRUE) %>%
+      rownames_to_column("variable") %>%
+      filter(nzv == FALSE) 
+
+train <- train %>%
+      select(nzv$variable)
+```
+
+## Correlation analysis
+
+Right now, the `train` data set contains `r ncol(train) - 1` predictor variables. I believe that some of them might be correlated with each other. If that's the case, I'll use Principal Components Analysis (PCA) to reduce the dimensionality.
+
+```{r, fig.height=10, fig.width=10}
+# Covariates Correlation Analysis
+correlations = cor(select(train, roll_belt:magnet_forearm_z))
+
+# Plot
+ggcorrplot(correlations, hc.order = TRUE, 
+           type = "lower", 
+           colors = c("tomato2", "white", "springgreen3"), 
+           title="Correlogram of train", 
+           ggtheme=theme_bw) +
+      theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+In the Figure above we see that some of the variables are correlated with each other. For that reason, I'll use PCA. Also, I'd like to practice this application using the `caret` package.
+
+
+## Principal Components Analysis
+
+In the code below I set `thresh = 0.85`, meaning that I'll choose a number of PC that keep at least 85% of the total variance.
+
+```{r}
+PCA <- preProcess(select(train, roll_belt:magnet_forearm_z),
+                      method = "pca",
+                      thresh = 0.85)
+PCA
+```
+
+PCA needed 15 components to capture 85 percent of the variance.
+
+```{r}
+train_pc <- predict(PCA, train)
+```
+
+# Model Fitting
+
+The model will be fit using the `train_pc` data set.
+
+I'll use Random Forest, because it's a good technique to start.
+
+I'll use a 10 fold cross-validation, repeated 3 times.
+
+```{r, cache=TRUE}
+# 10 folds cv, repeat 3 times
+control <- trainControl(method='repeatedcv', 
+                        number=10, 
+                        repeats=3)
+
+# Random Forest Fit
+fit_RF <- train(classe ~ .,
+            method = "rf",
+            data = train_pc,
+            trControl=control)
+```
+
+```{r}
+fit_RF
+```
+
+The accuracy in the `train_pc` data set is 0.9647, which is achieved setting the parameter `mtry = 2`.
+
+I feel okey with this results, but now I want to estimate the accuracy with data that was not used to train the model. This is when we use the `test` data set. Remember that we need to apply PCA to this data as well in order to use our model.
+
+```{r}
+# PCA on test data
+test_pc <- predict(PCA, test)
+```
+
+```{r}
+# Test accuracy
+confusionMatrix(as.factor(test$classe), predict(fit_RF,test_pc))
+```
+
+The accuracy in the `test` set is 0.965.
+
+I might try fitting other models, for example, using the original variables instead of the PC or using other techniques such as gbm. I should't use `test` data to compare the models, because if I do that, I'm using `test` to choose the model and I no longer have an estimate of the accuracy using data that was not part of the model fitting. If I were to try more models, I should divide `training` data set into three: `train`, `validation` and `test` sets. Then, I can use `train` to train the different models, `validation` to choose between them and `test` to assess it in data that was not used to fit it.
+
+# Predictions
+
+Using the fitted model, I'll predict the output for the observations in `testing`. Remember to apply PCA before using the `predict` function.
+
+```{r}
+testing_pc <- predict(PCA, testing)
+predict(fit_RF,testing_pc)
+```
+
+# Summary
+
+I divided `training` data set into two, `train` and `test`. 
+
+I used `train` to fit the model. 
+
+I removed ID and "time" variables. 
+
+I removed variables with high percentage of NA values and checked that the predictors didn't have near zero variance. 
+
+Then, with the remaining variables I applied PCA and I kept with 15 PC, capturing 85 percent of the variance.
+
+I used Random Forest to fit the model, using 10 fold cross-validation repeated 3 times. The best result were obtained using `mtry = 2`.
+
+The accuracy in the `test` set was 0.965.
